@@ -1,0 +1,28 @@
+--- orig_extract/sonora/lib/main.dart	2026-09-24 00:46:24.000000000 +0000
++++ sonora/sonora/lib/main.dart	2026-09-24 19:20:32.081117506 +0000
+@@ -9,10 +9,25 @@
+ import 'data/database/app_database.dart';
+ import 'data/repositories/settings_repository.dart';
+ import 'providers/database_provider.dart';
++import 'services/youtube/youtube_client.dart';
++
++/// Mude para `true` SÓ enquanto estiver investigando um problema de
++/// verdade com busca/streaming/download do YouTube (ex.: o
++/// `RequestLimitExceededException`). Isso liga um log bem detalhado
++/// (qual request foi feito, para qual "client", e onde exatamente o
++/// YouTube rejeitou) que aparece no console/terminal ao rodar o app.
++/// Volte para `false` depois — não é pra ficar ligado no dia a dia, e o
++/// log pode conter cookies/tokens de sessão, então não cole a saída em
++/// lugares públicos sem revisar antes.
++const kEnableYoutubeVerboseLogging = false;
+ 
+ Future<void> main() async {
+   WidgetsFlutterBinding.ensureInitialized();
+ 
++  if (kEnableYoutubeVerboseLogging) {
++    enableYoutubeVerboseLoggingForDebugging();
++  }
++
+   // Inicializa o motor de reprodução de áudio (media_kit/libmpv).
+   MediaKit.ensureInitialized();
+ 

@@ -1,0 +1,843 @@
+--- a/lib/data/models/youtube_search_result.dart
++++ b/lib/data/models/youtube_search_result.dart
+@@ -18,11 +18,47 @@
+   final String? thumbnailUrl;
+   final Duration duration;
+ 
++  /// ID do canal (`UC...`), quando o yt-dlp informou. É o que permite
++  /// abrir o canal a partir deste resultado (ver `YoutubeChannelRef`).
++  ///
++  /// ASSUNÇÃO NÃO TESTADA: em modo `--flat-playlist` cada entrada de
++  /// busca/playlist traz `channel_id` e `channel_url` sem custo extra.
++  /// Se não vierem, os três campos abaixo ficam `null` e a tela só não
++  /// mostra o card de canal — nada mais quebra. Conferir com
++  /// `tools/verificar_canal_ytdlp.ps1`.
++  final String? channelId;
++  final String? channelUrl;
++
++  /// Visualizações, quando o yt-dlp informou (`view_count`). Usado para
++  /// ordenar a aba Músicas de um canal da mais para a menos tocada.
++  /// `null` = desconhecido (e não "zero").
++  final int? viewCount;
++
+   const YoutubeSearchResult({
+     required this.videoId,
+     required this.title,
+     required this.channelName,
+     required this.thumbnailUrl,
+     required this.duration,
++    this.channelId,
++    this.channelUrl,
++    this.viewCount,
+   });
++
++  YoutubeSearchResult copyWith({
++    String? channelName,
++    String? channelId,
++    String? channelUrl,
++  }) {
++    return YoutubeSearchResult(
++      videoId: videoId,
++      title: title,
++      channelName: channelName ?? this.channelName,
++      thumbnailUrl: thumbnailUrl,
++      duration: duration,
++      channelId: channelId ?? this.channelId,
++      channelUrl: channelUrl ?? this.channelUrl,
++      viewCount: viewCount,
++    );
++  }
+ }
+--- a/lib/services/youtube/youtube_client.dart
++++ b/lib/services/youtube/youtube_client.dart
+@@ -3,7 +3,9 @@
+ 
+ import 'package:path/path.dart' as p;
+ 
++import '../../data/models/youtube_channel.dart';
+ import '../../data/models/youtube_search_result.dart';
++import 'channel_json_parser.dart';
+ import 'ytdlp_process.dart';
+ 
+ /// URL de streaming de áudio já pronta para tocar, junto dos cabeçalhos
+@@ -143,6 +145,294 @@
+         .toList();
+   }
+ 
++  // ---------------------------------------------------------------------
++  // Canais (aba Buscar → card do canal → Músicas / Álbuns / Ao vivo / Shows)
++  //
++  // Tudo aqui é SÓ LEITURA, no mesmo padrão de [getPlaylistVideos]
++  // (`--flat-playlist --dump-single-json <url>`, via
++  // [_dumpFlatPlaylistJson]). Nenhum endereço de aba abaixo foi conferido
++  // contra o YouTube de verdade — rodar `tools/verificar_canal_ytdlp.ps1`
++  // no Windows é o primeiro passo antes de confiar nisto.
++  // ---------------------------------------------------------------------
++
++  /// Quantos vídeos recentes do canal a aba Músicas lê antes de ordenar
++  /// por visualizações. Cada ~30 vídeos custa uma requisição de página ao
++  /// YouTube, então isto é um meio-termo entre completude e velocidade.
++  static const _songsScanLimit = 90;
++
++  /// Quantos aparecem de fato na aba Músicas (os mais vistos dos lidos).
++  static const _songsShown = 50;
++
++  static const _liveLimit = 40;
++  static const _showsLimit = 30;
++  static const _albumsLimit = 60;
++
++  /// Termos usados para achar gravações de show. Em inglês e português
++  /// juntos porque o app é em português mas muitos artistas publicam em
++  /// inglês.
++  static const _showsQuery = 'full concert show completo';
++
++  /// Lê uma das abas de vídeos de um canal ([ChannelTab.songs],
++  /// [ChannelTab.live] ou [ChannelTab.shows]). Para álbuns, use
++  /// [getChannelAlbums].
++  ///
++  /// Uma aba que o canal simplesmente não tem (comum: muitos canais não
++  /// têm `/streams`) vira uma lista vazia, não um erro.
++  Future<ChannelTabData<YoutubeSearchResult>> getChannelVideos(
++    YoutubeChannelRef channel,
++    ChannelTab tab,
++  ) async {
++    switch (tab) {
++      case ChannelTab.songs:
++        return _getChannelSongs(channel);
++      case ChannelTab.live:
++        return _getChannelLive(channel);
++      case ChannelTab.shows:
++        return _getChannelShows(channel);
++      case ChannelTab.albums:
++        throw ArgumentError('A aba de álbuns usa getChannelAlbums.');
++    }
++  }
++
++  /// Aba Músicas: as músicas mais famosas do canal, da mais tocada em diante.
++  ///
++  /// COMO FUNCIONA (e a limitação real): lê os [_songsScanLimit] uploads
++  /// MAIS RECENTES de `<canal>/videos` e ordena esses por `view_count`.
++  /// Isso é "os mais vistos entre os uploads recentes", não "os mais vistos
++  /// do canal inteiro" — para um canal com centenas de vídeos antigos, um
++  /// hit de anos atrás pode ficar de fora. Um jeito de pegar o ranking
++  /// verdadeiro seria a ordenação "Popular" do próprio YouTube
++  /// (`<canal>/videos?view=0&sort=p`), mas NÃO sei se o yt-dlp respeita
++  /// esse parâmetro — o script `tools/verificar_canal_ytdlp.ps1` compara
++  /// as duas formas; se a segunda funcionar, basta trocar o endereço aqui
++  /// e remover a ordenação local.
++  ///
++  /// ASSUNÇÃO NÃO TESTADA: `view_count` vem preenchido nas entradas em
++  /// modo flat. Se não vier, a lista fica na ordem do YouTube (mais
++  /// recentes primeiro) e a tela não mostra contagem.
++  Future<ChannelTabData<YoutubeSearchResult>> _getChannelSongs(
++    YoutubeChannelRef channel,
++  ) async {
++    final dump = await _dumpChannelTab(
++      '${channel.baseUrl}/videos',
++      limit: _songsScanLimit,
++    );
++    if (dump == null) return _emptyVideos();
++
++    final videos = parseChannelVideoEntries(
++      dump,
++      fallbackChannelName: channel.name,
++    );
++    final art = parseChannelArt(dump);
++    return ChannelTabData(
++      items: sortByViewsDescending(videos).take(_songsShown).toList(),
++      avatarUrl: art.avatarUrl,
++      bannerUrl: art.bannerUrl,
++    );
++  }
++
++  /// Aba Ao vivo: transmissões ao vivo do canal (as em andamento e as já
++  /// encerradas, que ficam como vídeo), da mais recente para a mais antiga
++  /// — a ordem do próprio YouTube em `<canal>/streams`.
++  Future<ChannelTabData<YoutubeSearchResult>> _getChannelLive(
++    YoutubeChannelRef channel,
++  ) async {
++    final dump = await _dumpChannelTab(
++      '${channel.baseUrl}/streams',
++      limit: _liveLimit,
++    );
++    if (dump == null) return _emptyVideos();
++
++    final art = parseChannelArt(dump);
++    return ChannelTabData(
++      items: parseChannelVideoEntries(dump, fallbackChannelName: channel.name),
++      avatarUrl: art.avatarUrl,
++      bannerUrl: art.bannerUrl,
++    );
++  }
++
++  /// Aba Shows: gravações de show do canal.
++  ///
++  /// ASSUNÇÃO NÃO TESTADA (a mais incerta das quatro abas): usa a busca
++  /// DENTRO do canal, `<canal>/search?query=<termos>`. Se o yt-dlp não
++  /// aceitar esse endereço (erro do processo), cai para uma busca geral
++  /// (`ytsearch`, o mesmo comando que [search] já usa e é sabidamente
++  /// suportado) filtrada para ficar só com resultados DESTE canal. O
++  /// efeito do plano B: só aparecem shows publicados no próprio canal, e
++  /// podem ser poucos.
++  Future<ChannelTabData<YoutubeSearchResult>> _getChannelShows(
++    YoutubeChannelRef channel,
++  ) async {
++    final query = Uri.encodeQueryComponent(_showsQuery);
++    try {
++      final dump = await _dumpChannelTab(
++        '${channel.baseUrl}/search?query=$query',
++        limit: _showsLimit,
++      );
++      if (dump != null) {
++        final art = parseChannelArt(dump);
++        return ChannelTabData(
++          items: parseChannelVideoEntries(
++            dump,
++            fallbackChannelName: channel.name,
++          ),
++          avatarUrl: art.avatarUrl,
++          bannerUrl: art.bannerUrl,
++        );
++      }
++    } on YtDlpProcessException {
++      // Cai para o plano B abaixo. (Rate limit NÃO é capturado aqui: um
++      // YoutubeRateLimitException sobe direto, sem tentar de novo.)
++    }
++
++    final all = await search('${channel.name} $_showsQuery', limit: 40);
++    final sameChannel = all.where((result) {
++      if (channel.id.isNotEmpty) return result.channelId == channel.id;
++      return result.channelName == channel.name;
++    }).toList();
++    return ChannelTabData(items: sameChannel);
++  }
++
++  /// Aba Álbuns: os álbuns do artista.
++  ///
++  /// ASSUNÇÃO NÃO TESTADA: `<canal>/releases` lista os álbuns/singles de um
++  /// canal de artista como playlists. Se o canal não tem essa aba (ou ela
++  /// vem vazia), tenta `<canal>/playlists` — que pode incluir playlists que
++  /// não são álbuns, mas é melhor que uma aba vazia.
++  Future<ChannelTabData<YoutubeAlbumRef>> getChannelAlbums(
++    YoutubeChannelRef channel,
++  ) async {
++    var dump = await _dumpChannelTab(
++      '${channel.baseUrl}/releases',
++      limit: _albumsLimit,
++    );
++    var albums = dump == null
++        ? const <YoutubeAlbumRef>[]
++        : parseChannelAlbumEntries(dump);
++
++    if (albums.isEmpty) {
++      final fallback = await _dumpChannelTab(
++        '${channel.baseUrl}/playlists',
++        limit: _albumsLimit,
++      );
++      if (fallback != null) {
++        dump = fallback;
++        albums = parseChannelAlbumEntries(fallback);
++      }
++    }
++
++    final art = dump == null ? ChannelArt.none : parseChannelArt(dump);
++    return ChannelTabData(
++      items: albums,
++      avatarUrl: art.avatarUrl,
++      bannerUrl: art.bannerUrl,
++    );
++  }
++
++  /// Faixas de um álbum — o mesmo caminho de [getPlaylistVideos] (um álbum
++  /// é só uma playlist do YouTube).
++  Future<List<YoutubeSearchResult>> getAlbumTracks(YoutubeAlbumRef album) {
++    return getPlaylistVideos(album.url, maxItems: 100);
++  }
++
++  /// Avatares/banners já lidos nesta sessão, por [YoutubeChannelRef.key].
++  /// Só guarda leituras que deram certo — uma falha (rede, bloqueio) não
++  /// fica "lembrada" e pode ser tentada de novo na próxima busca.
++  final Map<String, ChannelArt> _channelArtCache = {};
++
++  /// Leitura LEVE do logo/banner de um canal, para o card que aparece na
++  /// busca: lê só 1 vídeo de `<canal>/videos` (`--playlist-end 1`) e usa o
++  /// que vem em `thumbnails` no nível de cima do dump (ver
++  /// [parseChannelArt]) — o mesmo lugar de onde as abas já tiram o logo.
++  ///
++  /// Nunca lança: o logo é um enfeite, e a busca não pode falhar por
++  /// causa dele. Qualquer erro (sem rede, bloqueio do YouTube, canal sem
++  /// aba de vídeos) devolve [ChannelArt.none], e o card fica com o ícone.
++  ///
++  /// ASSUNÇÃO NÃO TESTADA: o avatar vem em `thumbnails` do nível de cima
++  /// mesmo com `--playlist-end 1`. O script `tools/verificar_canal_ytdlp.ps1`
++  /// (etapa 2c) confere exatamente este comando.
++  Future<ChannelArt> getChannelArt(YoutubeChannelRef channel) async {
++    final cached = _channelArtCache[channel.key];
++    if (cached != null) return cached;
++
++    // Em período de bloqueio, nem tenta — e, importante, FORA do `try`
++    // abaixo: o `on YoutubeRateLimitException` de lá renova o cooldown, e
++    // renová-lo por causa de um logo prolongaria o bloqueio da reprodução
++    // e dos downloads sem necessidade.
++    try {
++      _ensureNotInRateLimitCooldown();
++    } on YoutubeRateLimitException {
++      return ChannelArt.none;
++    }
++
++    try {
++      final dump = await _dumpFlatPlaylistJson(
++        '${channel.baseUrl}/videos',
++        playlistEnd: 1,
++      );
++      final art = parseChannelArt(dump);
++      _channelArtCache[channel.key] = art;
++      return art;
++    } on YoutubeRateLimitException {
++      _rateLimitedUntil = DateTime.now().add(_rateLimitCooldown);
++      return ChannelArt.none;
++    } catch (_) {
++      return ChannelArt.none;
++    }
++  }
++
++  /// Capa de um álbum: a miniatura do PRIMEIRO vídeo dele (ver
++  /// [albumCoverFromTracks]). Lê só 1 item da playlist
++  /// (`--playlist-end 1`), então é uma requisição leve — mas é uma por
++  /// álbum, por isso quem chama deve limitar quantas rodam ao mesmo tempo
++  /// (ver `ChannelBrowserNotifier.requestAlbumCover`).
++  ///
++  /// Devolve `null` se o álbum não tem faixa nenhuma; lança se a leitura
++  /// falhar (quem chama decide ignorar, já que capa é só enfeite).
++  Future<String?> getAlbumCoverUrl(YoutubeAlbumRef album) async {
++    final known = album.thumbnailUrl;
++    if (known != null && known.isNotEmpty) return known;
++
++    _ensureNotInRateLimitCooldown();
++    try {
++      final first = await getPlaylistVideos(album.url, maxItems: 1);
++      return albumCoverFromTracks(first);
++    } on YoutubeRateLimitException {
++      _rateLimitedUntil = DateTime.now().add(_rateLimitCooldown);
++      rethrow;
++    }
++  }
++
++  /// Lê uma aba de canal em modo flat. Devolve `null` quando o canal não
++  /// tem essa aba (ver [_looksLikeMissingTab]) — quem chama trata como
++  /// "vazio". Qualquer outro erro sobe normalmente.
++  Future<Map<String, dynamic>?> _dumpChannelTab(
++    String url, {
++    required int limit,
++  }) async {
++    try {
++      return await _dumpFlatPlaylistJson(url, playlistEnd: limit);
++    } on YtDlpProcessException catch (e) {
++      if (_looksLikeMissingTab(e.processStderr)) return null;
++      rethrow;
++    }
++  }
++
++  /// ASSUNÇÃO NÃO TESTADA: quando o canal não tem a aba pedida, o yt-dlp
++  /// termina com erro e uma mensagem do tipo "This channel does not have a
++  /// streams tab". Reconhecer o texto é frágil (pode mudar entre versões do
++  /// yt-dlp) — se mudar, o sintoma é a tela mostrar "não foi possível
++  /// carregar" em vez de "este canal não tem essa aba".
++  bool _looksLikeMissingTab(String? stderr) {
++    if (stderr == null) return false;
++    final lower = stderr.toLowerCase();
++    return lower.contains('does not have a') && lower.contains('tab');
++  }
++
++  ChannelTabData<YoutubeSearchResult> _emptyVideos() =>
++      const ChannelTabData<YoutubeSearchResult>(items: []);
++
+   /// Resolve uma URL de streaming de áudio pronta para tocar AGORA, junto
+   /// dos headers HTTP que precisam acompanhá-la (ver [ResolvedAudioStream]).
+   ///
+@@ -315,33 +605,10 @@
+ 
+   /// Converte um objeto JSON do yt-dlp (uma entrada de `--flat-playlist`,
+   /// ou o dump completo de um vídeo — os dois usam os mesmos nomes de
+-  /// campo) num [YoutubeSearchResult].
+-  YoutubeSearchResult _toSearchResult(Map<String, dynamic> data) {
+-    return YoutubeSearchResult(
+-      videoId: data['id'] as String,
+-      title: (data['title'] as String?) ?? '(sem título)',
+-      channelName: (data['channel'] ?? data['uploader']) as String? ?? '',
+-      thumbnailUrl: _bestThumbnail(data),
+-      duration: _durationOf(data['duration']),
+-    );
+-  }
+-
+-  String? _bestThumbnail(Map<String, dynamic> data) {
+-    final single = data['thumbnail'];
+-    if (single is String && single.isNotEmpty) return single;
+-
+-    final thumbnails = data['thumbnails'];
+-    if (thumbnails is List && thumbnails.isNotEmpty) {
+-      final last = thumbnails.last;
+-      if (last is Map && last['url'] is String) return last['url'] as String;
+-    }
+-    return null;
+-  }
+-
+-  Duration _durationOf(Object? raw) {
+-    if (raw is num) return Duration(milliseconds: (raw * 1000).round());
+-    return Duration.zero;
+-  }
++  /// campo) num [YoutubeSearchResult]. A conversão em si mora em
++  /// `channel_json_parser.dart` (função pura, testável sem rede).
++  YoutubeSearchResult _toSearchResult(Map<String, dynamic> data) =>
++      youtubeSearchResultFromJson(data);
+ 
+   /// Nada a liberar: cada chamada ao yt-dlp é um processo novo e
+   /// independente, sem conexão nem estado persistente entre uma chamada e
+--- a/lib/providers/download_providers.dart
++++ b/lib/providers/download_providers.dart
+@@ -15,6 +15,20 @@
+ import 'repository_providers.dart';
+ import 'service_providers.dart';
+ 
++/// Como terminou uma chamada a [DownloadNotifier.download]. Antes isso era
++/// só um `Future<void>` (o resultado ia só para [DownloadState]); quem
++/// baixa vários de uma vez (ver `AlbumInstallNotifier`) precisa saber, a
++/// cada faixa, se deu certo, se falhou, ou se o YouTube está limitando —
++/// neste último caso insistir nas próximas só piora.
++enum DownloadResult {
++  success,
++  failed,
++  rateLimited,
++
++  /// Já havia outro download em andamento (um por vez) — nada foi feito.
++  busy,
++}
++
+ /// Estado do download em andamento (no máximo um por vez, disparado
+ /// pelo botão de instalar no player — ver `DownloadButton`).
+ class DownloadState {
+@@ -56,8 +70,8 @@
+ 
+   DownloadNotifier(this._ref) : super(const DownloadState());
+ 
+-  Future<void> download(Song song) async {
+-    if (state.downloadingSongId != null) return; // um download por vez.
++  Future<DownloadResult> download(Song song) async {
++    if (state.downloadingSongId != null) return DownloadResult.busy; // um por vez.
+ 
+     state = DownloadState(downloadingSongId: song.id, progress: 0);
+ 
+@@ -98,6 +112,7 @@
+       _ref.read(libraryNotifierProvider.notifier).loadFromDb();
+ 
+       state = const DownloadState();
++      return DownloadResult.success;
+     } on YoutubeRateLimitException catch (e) {
+       // ignore: avoid_print
+       print('Sonora [download]: rate limit ao baixar "${song.title}": $e');
+@@ -107,6 +122,7 @@
+             'deste computador. Espere alguns minutos antes de tentar baixar '
+             'de novo.',
+       );
++      return DownloadResult.rateLimited;
+     } catch (e, stackTrace) {
+       // ignore: avoid_print
+       print('Sonora [download]: falha ao baixar "${song.title}" '
+@@ -115,6 +131,7 @@
+         errorMessage:
+             'Não foi possível baixar "${song.title}". Tente de novo mais tarde.',
+       );
++      return DownloadResult.failed;
+     }
+   }
+ 
+--- a/lib/providers/library_providers.dart
++++ b/lib/providers/library_providers.dart
+@@ -262,17 +262,29 @@
+   /// linha de verdade no banco, sem alterar o favorito. Usado sempre
+   /// que uma música da web precisa passar a existir como `Song` — ao
+   /// tocar, adicionar à fila ou adicionar a uma playlist.
+-  Song materializeWebSong(YoutubeSearchResult result) {
++  ///
++  /// [album]/[albumArtist]/[trackNumber] são opcionais e só vêm preenchidos
++  /// quando a música sai de um álbum (aba Álbuns de um canal — ver
++  /// `AlbumInstallNotifier`): é isso que faz um álbum instalado aparecer
++  /// agrupado na tela Álbuns. Deixados em branco (o caso de qualquer
++  /// resultado de busca comum), NÃO apagam um álbum já gravado antes —
++  /// ver `LibraryRepository.upsertWebSong`.
++  Song materializeWebSong(
++    YoutubeSearchResult result, {
++    String album = '',
++    String albumArtist = '',
++    int? trackNumber,
++  }) {
+     final song = Song(
+       id: 0, // ignorado no upsert; o banco decide o id de verdade.
+       path: 'youtube:${result.videoId}',
+       title: result.title,
+       artist: result.channelName,
+-      album: '',
+-      albumArtist: '',
++      album: album,
++      albumArtist: albumArtist,
+       genre: '',
+       year: null,
+-      trackNumber: null,
++      trackNumber: trackNumber,
+       durationMs: result.duration.inMilliseconds,
+       coverPath: null,
+       dateAdded: DateTime.now(),
+--- a/lib/providers/web_search_providers.dart
++++ b/lib/providers/web_search_providers.dart
+@@ -2,7 +2,9 @@
+ 
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ 
++import '../data/models/youtube_channel.dart';
+ import '../data/models/youtube_search_result.dart';
++import '../services/youtube/youtube_client.dart';
+ import 'service_providers.dart';
+ 
+ class WebSearchState {
+@@ -11,11 +13,19 @@
+   final bool isLoading;
+   final String? errorMessage;
+ 
++  /// Canal do card que aparece abaixo das 2 músicas do topo (ver
++  /// `pickChannelForResults`), ou `null` se nenhum resultado trouxe dados
++  /// de canal suficientes. Nasce sem logo e ganha [YoutubeChannelRef.avatarUrl]
++  /// logo depois, quando a leitura leve do canal termina (ver
++  /// `WebSearchNotifier._loadChannelArt`).
++  final YoutubeChannelRef? channel;
++
+   const WebSearchState({
+     this.query = '',
+     this.results = const [],
+     this.isLoading = false,
+     this.errorMessage,
++    this.channel,
+   });
+ 
+   WebSearchState copyWith({
+@@ -24,12 +34,15 @@
+     bool? isLoading,
+     String? errorMessage,
+     bool clearError = false,
++    YoutubeChannelRef? channel,
++    bool clearChannel = false,
+   }) {
+     return WebSearchState(
+       query: query ?? this.query,
+       results: results ?? this.results,
+       isLoading: isLoading ?? this.isLoading,
+       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
++      channel: clearChannel ? null : (channel ?? this.channel),
+     );
+   }
+ }
+@@ -48,7 +61,12 @@
+     _debounce?.cancel();
+ 
+     if (query.trim().isEmpty) {
+-      state = state.copyWith(results: const [], isLoading: false, clearError: true);
++      state = state.copyWith(
++        results: const [],
++        isLoading: false,
++        clearError: true,
++        clearChannel: true,
++      );
+       return;
+     }
+ 
+@@ -63,7 +81,17 @@
+       // O texto pode ter mudado de novo enquanto a busca rodava — não
+       // aplica um resultado que já não corresponde ao que está no campo.
+       if (state.query != query) return;
+-      state = state.copyWith(results: results, isLoading: false);
++
++      final channel = pickChannelForResults(results);
++      state = state.copyWith(
++        results: results,
++        isLoading: false,
++        channel: channel,
++        clearChannel: channel == null,
++      );
++
++      // Não espera: a lista aparece na hora e o logo entra quando chegar.
++      if (channel != null) _loadChannelArt(query, channel, youtube);
+     } catch (_) {
+       if (state.query != query) return;
+       state = state.copyWith(
+@@ -73,6 +101,34 @@
+     }
+   }
+ 
++  /// Busca o logo/banner do canal do card em segundo plano — a busca em si
++  /// não traz o avatar, só a leitura de uma aba do canal (ver
++  /// `YoutubeClient.getChannelArt`, uma requisição leve e com cache).
++  ///
++  /// `getChannelArt` nunca lança (devolve "sem arte" em qualquer falha), e
++  /// aqui nada é mostrado de erro: sem logo, o card só fica com o ícone.
++  Future<void> _loadChannelArt(
++    String query,
++    YoutubeChannelRef channel,
++    YoutubeClient youtube,
++  ) async {
++    final art = await youtube.getChannelArt(channel);
++    if (art.avatarUrl == null && art.bannerUrl == null) return;
++
++    // Já foi para outra busca, ou outro canal ocupa o card: descarta.
++    if (!mounted) return;
++    final current = state.channel;
++    if (state.query != query || current == null) return;
++    if (current.key != channel.key) return;
++
++    state = state.copyWith(
++      channel: current.copyWith(
++        avatarUrl: art.avatarUrl,
++        bannerUrl: art.bannerUrl,
++      ),
++    );
++  }
++
+   @override
+   void dispose() {
+     _debounce?.cancel();
+--- a/lib/data/repositories/library_repository.dart
++++ b/lib/data/repositories/library_repository.dart
+@@ -123,6 +123,13 @@
+   /// Preserva `is_favorite` e `local_path` já existentes: reimportar
+   /// (ex.: a mesma playlist de novo) não deve desfavoritar nem "perder"
+   /// um download já feito.
++  ///
++  /// Também preserva `album`, `album_artist` e `track_number` já gravados
++  /// quando o [song] novo não traz esses valores (álbum vazio / sem número
++  /// de faixa): uma música instalada como parte de um álbum (ver
++  /// `AlbumInstallNotifier`) não deve perder o álbum só porque o mesmo
++  /// vídeo apareceu depois num resultado de busca comum, que não sabe de
++  /// álbum nenhum.
+   Song upsertWebSong(Song song) {
+     assert(song.source == SongSource.youtube && song.remoteId != null);
+ 
+@@ -137,7 +144,11 @@
+       _db.execute(
+         '''
+         UPDATE songs SET
+-          title = ?, artist = ?, album = ?, album_artist = ?, genre = ?,
++          title = ?, artist = ?,
++          album = COALESCE(NULLIF(?, ''), album),
++          album_artist = COALESCE(NULLIF(?, ''), album_artist),
++          genre = ?,
++          track_number = COALESCE(?, track_number),
+           duration_ms = ?, cover_url = ?
+         WHERE id = ?
+         ''',
+@@ -147,6 +158,7 @@
+           song.album,
+           song.albumArtist,
+           song.genre,
++          song.trackNumber,
+           song.durationMs,
+           song.coverUrl,
+           id,
+--- a/lib/features/search/search_screen.dart
++++ b/lib/features/search/search_screen.dart
+@@ -2,10 +2,15 @@
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ 
+ import '../../core/theme/app_colors.dart';
++import '../../data/models/youtube_channel.dart';
++import '../../data/models/youtube_search_result.dart';
++import '../../providers/channel_providers.dart';
+ import '../../providers/service_providers.dart';
+ import '../../providers/web_search_providers.dart';
+ import '../../services/web_music/playlist_import_service.dart';
+ import '../../shared_widgets/empty_state.dart';
++import 'widgets/channel_browser_view.dart';
++import 'widgets/channel_card.dart';
+ import 'widgets/import_playlist_dialog.dart';
+ import 'widgets/web_result_tile.dart';
+ 
+@@ -15,6 +20,11 @@
+ /// inteira em vez de buscar. Um link de playlist do Spotify ainda é
+ /// reconhecido (pra dar uma mensagem clara), mas a importação em si
+ /// está desativada por enquanto — ver [spotifyPlaylistImportEnabled].
++///
++/// O resultado de uma busca tem o layout: as 2 músicas mais relevantes no
++/// topo, logo abaixo um card do canal (artista/banda) e, depois, o resto
++/// dos resultados do YouTube, sem filtrar nada. Tocar no card abre a área
++/// do canal AQUI MESMO (não é uma tela nova) — ver [ChannelBrowserView].
+ class SearchScreen extends ConsumerWidget {
+   const SearchScreen({super.key});
+ 
+@@ -24,6 +34,10 @@
+     final youtubeClientAsync = ref.watch(youtubeClientProvider);
+     final linkType = PlaylistImportService.detectLinkType(searchState.query);
+     final looksLikePlaylistLink = linkType != PlaylistLinkType.unknown;
++    // Só interessa SE há um canal aberto (não o estado todo dele), para a
++    // tela inteira não redesenhar a cada aba que carrega.
++    final isChannelOpen =
++        ref.watch(channelBrowserProvider.select((state) => state.channel != null));
+ 
+     return Column(
+       crossAxisAlignment: CrossAxisAlignment.stretch,
+@@ -47,7 +61,12 @@
+           padding: const EdgeInsets.symmetric(horizontal: 20),
+           child: TextField(
+             autofocus: true,
+-            onChanged: (value) => ref.read(webSearchNotifierProvider.notifier).setQuery(value),
++            onChanged: (value) {
++              // Digitar de novo é buscar outra coisa: sai do canal aberto
++              // e volta a mostrar os resultados.
++              ref.read(channelBrowserProvider.notifier).closeChannel();
++              ref.read(webSearchNotifierProvider.notifier).setQuery(value);
++            },
+             decoration: const InputDecoration(
+               hintText: 'Busque uma música, ou cole um link de playlist do YouTube...',
+               prefixIcon: Icon(Icons.search_rounded, size: 20),
+@@ -65,7 +84,11 @@
+           ),
+         ],
+         const SizedBox(height: 8),
+-        Expanded(child: _buildBody(context, ref, searchState, looksLikePlaylistLink, linkType)),
++        Expanded(
++          child: isChannelOpen
++              ? const ChannelBrowserView()
++              : _buildBody(context, ref, searchState, looksLikePlaylistLink, linkType),
++        ),
+       ],
+     );
+   }
+@@ -155,13 +178,74 @@
+       );
+     }
+ 
+-    final results = searchState.results;
++    return _buildResults(ref, searchState.results, searchState.channel);
++  }
++
++  /// Quantas músicas ficam no topo, antes do card do canal.
++  static const _topSongsCount = 2;
++
++  /// Monta o resultado: [_topSongsCount] músicas mais relevantes, o card do
++  /// canal ([channel] — `null` se nenhum resultado trouxe dados suficientes
++  /// de canal para abri-lo; ver `WebSearchNotifier`) e o restante, sem
++  /// filtrar por tipo.
++  ///
++  /// Cada linha é um construtor de widget (e não o widget já pronto) para a
++  /// lista continuar preguiçosa como antes: só as linhas visíveis criam seu
++  /// widget (e carregam a capa da rede).
++  Widget _buildResults(
++    WidgetRef ref,
++    List<YoutubeSearchResult> results,
++    YoutubeChannelRef? channel,
++  ) {
++    final topCount = results.length < _topSongsCount ? results.length : _topSongsCount;
++
++    Widget tile(int index) => WebResultTile(
++          result: results[index],
++          index: index,
++          contextList: results,
++        );
++
++    final rows = <Widget Function()>[
++      () => const _SectionLabel('Melhores resultados'),
++      for (var i = 0; i < topCount; i++) () => tile(i),
++      if (channel != null) () => _channelCard(ref, channel),
++      if (results.length > topCount) () => const _SectionLabel('Mais resultados'),
++      for (var i = topCount; i < results.length; i++) () => tile(i),
++    ];
++
+     return ListView.builder(
+       padding: const EdgeInsets.only(bottom: 20),
+-      itemCount: results.length,
+-      itemBuilder: (context, index) {
+-        return WebResultTile(result: results[index], index: index, contextList: results);
+-      },
++      itemCount: rows.length,
++      itemBuilder: (context, index) => rows[index](),
++    );
++  }
++
++  Widget _channelCard(WidgetRef ref, YoutubeChannelRef channel) {
++    return ChannelCard(
++      key: ValueKey('channel:${channel.key}'),
++      channel: channel,
++      onTap: () => ref.read(channelBrowserProvider.notifier).openChannel(channel),
++    );
++  }
++}
++
++class _SectionLabel extends StatelessWidget {
++  final String text;
++
++  const _SectionLabel(this.text);
++
++  @override
++  Widget build(BuildContext context) {
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
++      child: Text(
++        text,
++        style: const TextStyle(
++          fontSize: 13,
++          fontWeight: FontWeight.w700,
++          color: AppColors.textSecondary,
++        ),
++      ),
+     );
+   }
+ }
+--- a/lib/features/search/widgets/web_result_tile.dart
++++ b/lib/features/search/widgets/web_result_tile.dart
+@@ -3,6 +3,7 @@
+ 
+ import '../../../core/theme/app_colors.dart';
+ import '../../../core/utils/duration_formatter.dart';
++import '../../../core/utils/view_count_formatter.dart';
+ import '../../../data/models/youtube_search_result.dart';
+ import '../../../providers/audio_providers.dart';
+ import '../../../providers/library_providers.dart';
+@@ -28,11 +29,17 @@
+   /// igual ao comportamento da Biblioteca).
+   final List<YoutubeSearchResult> contextList;
+ 
++  /// Mostra a contagem de visualizações ao lado do nome do canal (quando
++  /// o yt-dlp informou). Ligado só nas listas de um canal, onde a ordem é
++  /// "mais tocadas primeiro" e o número explica a ordem.
++  final bool showViewCount;
++
+   const WebResultTile({
+     super.key,
+     required this.result,
+     required this.index,
+     required this.contextList,
++    this.showViewCount = false,
+   });
+ 
+   @override
+@@ -65,7 +72,7 @@
+                     ),
+                     const SizedBox(height: 2),
+                     Text(
+-                      result.channelName,
++                      _subtitle(),
+                       maxLines: 1,
+                       overflow: TextOverflow.ellipsis,
+                       style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+@@ -98,6 +105,15 @@
+     );
+   }
+ 
++  String _subtitle() {
++    final views = result.viewCount;
++    if (!showViewCount || views == null) return result.channelName;
++    final formatted = ViewCountFormatter.format(views);
++    return result.channelName.isEmpty
++        ? formatted
++        : '${result.channelName} • $formatted';
++  }
++
+   void _playFrom(WidgetRef ref) {
+     final notifier = ref.read(libraryNotifierProvider.notifier);
+     final songs = contextList.map(notifier.materializeWebSong).toList();

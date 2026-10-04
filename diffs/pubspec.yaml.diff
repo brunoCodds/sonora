@@ -1,0 +1,16 @@
+--- orig_extract/sonora/pubspec.yaml	2026-09-24 00:46:24.000000000 +0000
++++ sonora/sonora/pubspec.yaml	2026-09-24 19:27:50.582882281 +0000
+@@ -37,6 +37,13 @@
+   # restritiva de 100 buscas/dia da API oficial).
+   youtube_explode_dart: ^3.0.5
+ 
++  # Usado só para o log verboso de diagnóstico do youtube_explode_dart
++  # (ver `enableYoutubeVerboseLoggingForDebugging` em youtube_client.dart).
++  # Já vinha como dependência transitiva (a própria youtube_explode_dart
++  # usa); listado aqui explicitamente porque o Sonora agora a importa
++  # direto.
++  logging: ^1.3.0
++
+   # Cliente HTTP (usado pela integração com a Web API do Spotify, via
+   # Client Credentials Flow, só para ler faixas de playlists públicas).
+   http: ^1.2.2

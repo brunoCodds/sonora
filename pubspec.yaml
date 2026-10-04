@@ -1,0 +1,72 @@
+name: sonora
+description: Player de música local para desktop, com biblioteca, playlists, fila e reprodução via metadados de arquivos.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Estado da aplicação
+  flutter_riverpod: ^2.5.1
+
+  # Reprodução de áudio (baseado em libmpv, ótimo suporte a mp3/flac/wav/ogg/m4a)
+  media_kit: ^1.1.11
+  media_kit_libs_windows_audio: ^1.0.9
+  media_kit_libs_linux: ^1.1.4
+  media_kit_libs_macos_audio: ^1.1.4
+
+  # Persistência local (SQLite puro, sem geração de código)
+  sqlite3: ^2.4.6
+  sqlite3_flutter_libs: ^0.5.24
+  path_provider: ^2.1.3
+  path: ^1.9.0
+
+  # Leitura/escrita de metadados de áudio (título, artista, álbum, capa)
+  audiotags: ^1.4.5
+
+  # Importação de arquivos e pastas
+  file_picker: ^8.0.0
+
+  # Busca, playlists, resolução de stream e download do YouTube: chamando
+  # o yt-dlp.exe empacotado (ver assets/bin/) como processo externo via
+  # dart:io, não precisa de nenhum pacote Dart além do que já é da SDK
+  # (dart:io + dart:convert). Ver lib/services/youtube/ytdlp_process.dart.
+
+  # Cliente HTTP (usado pela integração com a Web API do Spotify, via
+  # Client Credentials Flow, só para ler faixas de playlists públicas).
+  http: ^1.2.2
+
+  # Armazenamento criptografado (DPAPI/AES no Windows) para credenciais
+  # sensíveis (Client ID/Secret do Spotify), separado do restante das
+  # preferências (que continuam em texto puro no SettingsRepository).
+  flutter_secure_storage: ^9.2.2
+
+  # Janela desktop (tamanho, posição, título customizado)
+  window_manager: ^0.4.2
+
+  # Efeito de vidro (acrylic) na janela — usado só pelo painel "Discreto" do
+  # modo bandeira. Todo o contato com ele fica em lib/core/utils/window_glass.dart.
+  flutter_acrylic: ^1.1.4
+
+  # Ícone e menu na bandeja do sistema (modo "segundo plano")
+  tray_manager: ^0.5.2
+
+  # Utilitários
+  collection: ^1.18.0
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icons/
+    - assets/bin/

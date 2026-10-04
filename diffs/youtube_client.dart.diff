@@ -1,0 +1,203 @@
+--- orig_extract/sonora/lib/services/youtube/youtube_client.dart	2026-09-24 00:46:24.000000000 +0000
++++ sonora/sonora/lib/services/youtube/youtube_client.dart	2026-09-24 19:13:51.980465433 +0000
+@@ -1,9 +1,37 @@
++import 'package:logging/logging.dart';
+ import 'package:youtube_explode_dart/solvers.dart';
+ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+ 
+ import '../../data/models/youtube_search_result.dart';
+ import 'deno_runtime_manager.dart';
+ 
++/// Liga o log verboso da própria lib `youtube_explode_dart` (nível
++/// `FINER`, exatamente como documentado no README dela). Isso mostra,
++/// linha a linha, qual request está sendo feito, para qual client
++/// (`androidSdkless`, `ios`, `tv`, `safari`...) e onde exatamente uma
++/// eventual rejeição do YouTube acontece — muito mais preciso que
++/// ficar adivinhando pelo tipo da exceção.
++///
++/// Use só temporariamente, para investigar um problema real (ex.: o
++/// `RequestLimitExceededException` sendo investigado nesta tarefa):
++/// chame isso uma única vez, bem no início do `main()`, antes de tocar
++/// ou baixar qualquer coisa. **Nunca deixe isso ligado em build
++/// publicado, nem cole a saída em lugar público (ex.: issue do GitHub,
++/// fórum) sem revisar antes** — pode conter cookies/tokens de sessão.
++void enableYoutubeVerboseLoggingForDebugging() {
++  Logger.root.level = Level.FINER;
++  Logger.root.onRecord.listen((record) {
++    // ignore: avoid_print
++    print(record);
++    if (record.error != null) {
++      // ignore: avoid_print
++      print(record.error);
++      // ignore: avoid_print
++      print(record.stackTrace);
++    }
++  });
++}
++
+ /// Encapsula toda a interação com o YouTube (busca, playlists e
+ /// resolução de stream de áudio) via `youtube_explode_dart` — um pacote
+ /// não-oficial, que tecnicamente viola os termos de uso do YouTube por
+@@ -15,6 +43,23 @@
+ class YoutubeClient {
+   final YoutubeExplode _yt;
+ 
++  /// Preenchido quando uma resolução de stream leva um
++  /// `RequestLimitExceededException` — ver [_ensureNotInRateLimitCooldown].
++  DateTime? _rateLimitedUntil;
++
++  /// Tempo mínimo de espera, dentro desta mesma sessão do app, depois de
++  /// um `RequestLimitExceededException`, antes de deixar tentar resolver
++  /// outro stream de novo.
++  ///
++  /// Esse erro específico é a página de "confirme que você não é um
++  /// robô" do próprio Google (ou um HTTP 429) — um bloqueio por
++  /// IP/rede, não algo ligado a qual vídeo ou "client" foi usado (ver
++  /// nota grande em [_bestAudioStreamInfoViaClients]). Repetir a
++  /// tentativa em seguida não tem chance real de dar certo e só
++  /// arrisca alongar o bloqueio, então preferimos falhar na hora,
++  /// localmente, sem gerar mais tráfego para o YouTube.
++  static const _rateLimitCooldown = Duration(minutes: 3);
++
+   YoutubeClient._(this._yt);
+ 
+   /// Cria o cliente já com o solver de desafio de assinatura (Deno)
+@@ -89,8 +134,45 @@
+     return _bestAudioStream(videoId);
+   }
+ 
++  /// Ordem de "clients" (perfis que a lib usa para se apresentar ao
++  /// YouTube, imitando apps diferentes — Android, iOS, TV, Safari/web)
++  /// tentados ao resolver um stream de áudio. Ver
++  /// `youtube_explode_dart/lib/src/videos/youtube_api_client.dart` (no
++  /// pacote instalado, versão 3.1.0) para a definição de cada um.
++  ///
++  /// IMPORTANTE, achado ao investigar esta tarefa: a própria lib,
++  /// nesta versão, **já** usa `androidSdkless` por padrão quando
++  /// nenhum client é especificado (e adiciona `safari` automaticamente
++  /// quando um `jsSolver` está configurado, que é o nosso caso). Ou
++  /// seja: só declarar `androidSdkless` explicitamente aqui, sozinho,
++  /// não muda nada na prática — o Sonora já estava usando esse client.
++  /// O valor de fixar esta lista explicitamente é outro: controlar a
++  /// ORDEM e permitir cair para o próximo perfil quando um específico
++  /// falhar por um motivo que dependa do client (ex.: vídeo sem os
++  /// streams que aquele perfil consegue enxergar) — ver
++  /// [_bestAudioStreamInfoViaClients] para a lógica de quando vale a
++  /// pena tentar o próximo item desta lista e quando não vale.
++  static const _clientFallbackOrder = [
++    // 1ª tentativa: leve (não depende do solver de JS/Deno) e, segundo
++    // a documentação da própria lib, feita para não exigir PO-Token em
++    // streams de áudio isolado — exatamente o nosso caso de uso.
++    YoutubeApiClient.androidSdkless,
++    // 2ª: perfil diferente (iOS), streams mais limitados mas também
++    // não depende de decifrar assinatura — útil quando o Android
++    // especificamente está de fora do ar para um vídeo.
++    YoutubeApiClient.ios,
++    // 3ª: usado pela própria lib como o fallback final dela também
++    // (quando nenhum client é passado); ajuda em vídeos com algum tipo
++    // de restrição.
++    YoutubeApiClient.tv,
++    // 4ª e última: mais "pesado" (precisa decifrar assinatura via
++    // Deno), mas o mais completo — bom último recurso para os vídeos
++    // mais difíceis.
++    YoutubeApiClient.safari,
++  ];
++
+   Future<AudioOnlyStreamInfo> _bestAudioStream(String videoId) async {
+-    final manifest = await _yt.videos.streams.getManifest(videoId);
++    final manifest = await _bestAudioStreamInfoViaClients(videoId);
+     final audioStreams = manifest.audioOnly.toList();
+     if (audioStreams.isEmpty) {
+       throw StateError('Nenhum stream de áudio disponível para este vídeo.');
+@@ -102,6 +184,91 @@
+     return audioStreams.first;
+   }
+ 
++  /// Tenta resolver o manifest de streams percorrendo
++  /// [_clientFallbackOrder], um client por vez.
++  ///
++  /// Dois tipos de falha são tratados de formas BEM diferentes aqui, de
++  /// propósito:
++  ///
++  /// - `RequestLimitExceededException`: é o Google bloqueando o
++  ///   tráfego deste IP/rede (a mesma página de "confirme que você não
++  ///   é um robô" que apareceria num navegador comum, ou um HTTP 429 —
++  ///   ver `youtube_http_client.dart` dentro do pacote). Isso **não**
++  ///   depende de qual client foi usado — o próximo item da lista veria
++  ///   exatamente o mesmo bloqueio, então continuar a cadeia só geraria
++  ///   requisições extras sem chance real de sucesso. Por isso paramos
++  ///   na hora e ativamos um cooldown local (ver [_rateLimitCooldown]).
++  /// - qualquer outra exceção (ex.: vídeo sem os streams que aquele
++  ///   client específico consegue ver): aí sim vale tentar o próximo
++  ///   client da lista antes de desistir.
++  Future<StreamManifest> _bestAudioStreamInfoViaClients(String videoId) async {
++    _ensureNotInRateLimitCooldown();
++
++    Object? lastError;
++    StackTrace? lastStack;
++
++    for (final client in _clientFallbackOrder) {
++      try {
++        return await _yt.videos.streams.getManifest(
++          videoId,
++          ytClients: [client],
++        );
++      } on RequestLimitExceededException catch (e) {
++        _rateLimitedUntil = DateTime.now().add(_rateLimitCooldown);
++        // ignore: avoid_print
++        print(
++          'Sonora [YouTube stream]: bloqueio de tráfego do YouTube ao '
++          'tentar o client "${_clientName(client)}" para $videoId — '
++          'parando a cadeia de fallback (ver comentário de '
++          '_bestAudioStreamInfoViaClients). $e',
++        );
++        rethrow;
++      } catch (e, s) {
++        // ignore: avoid_print
++        print(
++          'Sonora [YouTube stream]: client "${_clientName(client)}" '
++          'falhou para $videoId, tentando o próximo. $e',
++        );
++        lastError = e;
++        lastStack = s;
++      }
++    }
++
++    if (lastError is Error && lastStack != null) {
++      Error.throwWithStackTrace(lastError, lastStack);
++    }
++    throw lastError ??
++        StateError(
++          'Não foi possível obter os streams do vídeo "$videoId" com '
++          'nenhum dos clients disponíveis.',
++        );
++  }
++
++  void _ensureNotInRateLimitCooldown() {
++    final until = _rateLimitedUntil;
++    if (until == null) return;
++    final remaining = until.difference(DateTime.now());
++    if (remaining <= Duration.zero) {
++      _rateLimitedUntil = null;
++      return;
++    }
++    throw RequestLimitExceededException(
++      'O YouTube limitou as requisições feitas deste computador há '
++      'pouco (ver tentativa anterior). Aguarde mais '
++      '${remaining.inSeconds}s antes de tentar de novo — tentar de '
++      'novo agora só arrisca prolongar o bloqueio.',
++    );
++  }
++
++  /// Só para as mensagens de log acima — usa acesso `dynamic`, igual a
++  /// própria lib faz internamente (`stream_client.dart`), em vez de
++  /// tentar tipar `payload` (evita erro de cast caso o tipo exato do
++  /// mapa aninhado mude entre versões da lib).
++  String _clientName(YoutubeApiClient client) {
++    final dynamic clientName = client.payload['context']['client']['clientName'];
++    return clientName is String ? clientName : 'desconhecido';
++  }
++
+   /// Abre o stream de bytes de verdade de um `AudioOnlyStreamInfo`
+   /// (obtido via [getBestAudioStreamInfo]) — usado por
+   /// `YoutubeDownloadService` para gravar o áudio em disco.

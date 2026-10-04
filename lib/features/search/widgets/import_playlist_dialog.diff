@@ -1,0 +1,16 @@
+--- a/lib/features/search/widgets/import_playlist_dialog.dart	2026-09-30 18:00:40.000000000 +0000
++++ b/lib/features/search/widgets/import_playlist_dialog.dart	2026-10-02 21:23:51.555287754 +0000
+@@ -67,6 +67,13 @@
+             TextField(
+               controller: _linkController,
+               autofocus: true,
++              // O botão "Importar" (em _buildActions) só habilita se este
++              // campo tiver texto. Sem este rebuild, o botão ficava preso
++              // no estado de quando o diálogo abriu (vazio => desabilitado),
++              // porque nada mandava o diálogo se redesenhar ao digitar ou
++              // colar. Só funcionava com [initialLink], que já abre o campo
++              // preenchido.
++              onChanged: (_) => setState(() {}),
+               decoration: const InputDecoration(hintText: 'Link da playlist'),
+             ),
+             const SizedBox(height: 12),
