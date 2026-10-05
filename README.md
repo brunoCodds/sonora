@@ -8,7 +8,7 @@
 
 **Seu player de música para Windows: toque sua coleção, busque na internet e deixe tudo à mão.**
 
-[**⬇️ Baixar SONORA**](https://github.com/brunoCodds/sonora/releases/latest/download/SONORA.rar) · [Funcionalidades](#funcionalidades) · [Como instalar](#como-instalar) · [Perguntas frequentes](#perguntas-frequentes)
+[**Baixar SONORA**](https://github.com/brunoCodds/sonora/releases/latest/download/SONORA.rar) · [Funcionalidades](#funcionalidades) · [Como instalar](#como-instalar) · [Perguntas frequentes](#perguntas-frequentes)
 
 </div>
 
