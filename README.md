@@ -8,7 +8,7 @@
 
 **Seu player de música para Windows: toque sua coleção, busque na internet e deixe tudo à mão.**
 
-[**Baixar SONORA**](https://github.com/brunoCodds/sonora/releases/latest/download/SONORA.rar) · [Funcionalidades](#funcionalidades) · [Como instalar](#como-instalar) · [Perguntas frequentes](#perguntas-frequentes)
+[**Baixar SONORA**](https://github.com/brunoCodds/sonora/releases/latest/download/SONORA.zip) · [Funcionalidades](#funcionalidades) · [Como instalar](#como-instalar) · [Perguntas frequentes](#perguntas-frequentes)
 
 </div>
 
@@ -342,13 +342,15 @@ Suas músicas originais e as músicas baixadas não são apagadas junto com a pa
 - [SQLite](https://www.sqlite.org/): guarda a sua biblioteca no seu computador.
 - [audiotags](https://pub.dev/packages/audiotags): leitura das informações e capas dos arquivos de música.
 - [Flutter](https://flutter.dev/): a base da interface do programa.
-- E outras bibliotecas livres, cada uma com a sua licença.
+- E outras bibliotecas livres, cada uma com a sua licença. Os avisos completos estão em [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
 
-**Licença:** SEU-TIPO-DE-LICENCA
+**Licença:** o código do Sonora é livre e está neste repositório, sob a [Licença MIT](LICENSE). Você pode usar, copiar e modificar o código, mantendo o aviso de copyright.
+
+O **nome e as logos do Sonora não fazem parte dessa licença**. Se você fizer uma versão própria, use outro nome e outras imagens.
 
 ## 💬 Feedback
 
-Encontrou um problema ou tem uma ideia? Abra uma conversa na aba [**Issues**](https://github.com/SEU-USUARIO/SEU-REPOSITORIO/issues) do repositório.
+Encontrou um problema ou tem uma ideia? Abra uma conversa na aba [**Issues**](https://github.com/brunoCodds/sonora/issues) do repositório.
 
 Se o Sonora fez diferença no seu dia, deixe uma ⭐ aqui no GitHub. Ajuda muito!
 

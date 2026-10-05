@@ -1,0 +1,63 @@
+AVISOS DE TERCEIROS - SONORA
+============================
+
+O Sonora usa os componentes abaixo. Cada um tem a sua própria licença, que
+continua valendo para ele. Este arquivo não muda os termos dessas licenças.
+A licença do código do Sonora (MIT) está no arquivo LICENSE.
+
+
+1) libmpv e FFmpeg (arquivo libmpv-2.dll)
+-----------------------------------------
+Licença: LGPL versão 3 ou posterior. A libmpv foi compilada sem GPL e o
+FFmpeg embutido informa "LGPL version 3 or later".
+
+Texto da licença: licenses/LGPL-3.0.txt
+(a LGPL 3 remete à GPL 3, que está em licenses/GPL-3.0.txt)
+
+A libmpv é carregada como uma DLL separada. Você pode trocar o arquivo
+libmpv-2.dll por outra versão compatível da libmpv.
+
+Código-fonte:
+  - mpv: https://github.com/mpv-player/mpv
+  - FFmpeg: https://ffmpeg.org/download.html
+  - Scripts usados para compilar esta DLL (projeto media-kit):
+    https://github.com/media-kit/libmpv-win32-audio-build
+
+
+2) yt-dlp (arquivo data/flutter_assets/assets/bin/yt-dlp.exe)
+-------------------------------------------------------------
+Licença: Unlicense (domínio público). Versão no pacote atual: 2026.08.19.
+O executável do Windows inclui código de outros projetos, com licenças
+próprias, reunidas em:
+  https://github.com/yt-dlp/yt-dlp/blob/master/THIRD_PARTY_LICENSES.txt
+
+O Sonora executa o yt-dlp como um programa separado.
+Site do projeto: https://github.com/yt-dlp/yt-dlp
+
+
+3) Flutter
+----------
+Licença: BSD de 3 cláusulas. https://flutter.dev/
+
+
+4) Pacotes usados diretamente pelo Sonora
+-----------------------------------------
+Licença MIT:
+  flutter_riverpod, media_kit, media_kit_libs_windows_audio, sqlite3,
+  sqlite3_flutter_libs, audiotags, file_picker, window_manager,
+  tray_manager, flutter_acrylic
+
+Licença BSD de 3 cláusulas:
+  path, path_provider, http, flutter_secure_storage, collection, intl
+
+O sqlite3_flutter_libs inclui o SQLite, que é de domínio público.
+https://www.sqlite.org/copyright.html
+
+
+5) Textos completos
+-------------------
+Os textos completos das licenças do Flutter e de todos os pacotes acima
+(e de suas dependências) estão no arquivo
+  data/flutter_assets/NOTICES.Z
+dentro da pasta do programa. Ele é um arquivo de texto compactado em
+formato gzip.
