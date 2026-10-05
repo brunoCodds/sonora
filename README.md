@@ -192,7 +192,7 @@ flowchart LR
 
 **Passo a passo:**
 
-1. Abra a página de [downloads (Releases)](https://github.com/SEU-USUARIO/SEU-REPOSITORIO/releases/latest) e baixe o arquivo `.zip` do programa.
+1. Abra a página de [downloads (Releases)](https://github.com/brunoCodds/sonora/releases/) e baixe o arquivo `.zip` do programa.
 2. Clique com o botão direito no arquivo baixado e escolha **Extrair tudo...**. Extraia a pasta **inteira**.
 3. Abra a pasta extraída e dê dois cliques em **`sonora.exe`**.
 4. Se quiser um atalho na Área de Trabalho: clique com o botão direito em `sonora.exe`, vá em **Enviar para** e escolha **Área de trabalho (criar atalho)**.
